@@ -1,0 +1,769 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  CUSTOMER
+  MATE
+  ADMIN
+}
+
+// SRS 10.5
+enum BookingStatus {
+  DRAFT
+  PENDING_PAYMENT
+  PAYMENT_AUTHORISED
+  PENDING_MATE_ACCEPTANCE
+  PARTIALLY_ACCEPTED
+  CONFIRMED
+  MATE_ON_WAY
+  CHECKED_IN
+  IN_PROGRESS
+  COMPLETED
+  CANCELLATION_REQUESTED
+  CANCELLED
+  DISPUTED
+  REFUNDED
+  FAILED
+  NO_SHOW
+}
+
+enum MateResponse {
+  PENDING
+  ACCEPTED
+  DECLINED
+  WITHDRAWN
+}
+
+enum GroupVisibility {
+  PUBLIC
+  PRIVATE
+  INVITE_ONLY
+  APPROVAL_REQUIRED
+}
+
+enum ServiceKind {
+  COMPANION
+  HOUSEHOLD
+}
+
+// Addendum 1.3
+enum Recurrence {
+  ONE_TIME
+  DAILY
+  WEEKLY
+  FORTNIGHTLY
+  MONTHLY
+  WEEKENDS
+}
+
+enum ReportStatus {
+  OPEN
+  INVESTIGATING
+  ACTIONED
+  DISMISSED
+}
+
+// SRS v1.3 s4.3: staff roles for Role=ADMIN accounts. Permissions live in src/lib/permissions.ts.
+enum StaffRole {
+  SUPER_ADMIN
+  GENERAL_MANAGER
+  OPERATIONS_MANAGER
+  MATE_RECRUITMENT_OFFICER
+  VERIFICATION_OFFICER
+  CUSTOMER_SUPPORT
+  MATE_SUPPORT
+  BOOKING_COORDINATOR
+  SAFETY_OFFICER
+  COMPLAINTS_OFFICER
+  FINANCE_OFFICER
+  MARKETING_MANAGER
+  QUALITY_OFFICER
+  REGIONAL_MANAGER
+  TEAM_LEADER
+}
+
+enum AccountStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
+model User {
+  id          String        @id @default(cuid())
+  email       String        @unique
+  mobile      String?       @unique // E.164, e.g. +61412345678
+  legalName   String // private: never rendered publicly
+  displayName String
+  dateOfBirth DateTime
+  role        Role          @default(CUSTOMER)
+  staffRole   StaffRole? // only for role=ADMIN; null staff accounts have no permissions
+  staffRegion String? // state code for REGIONAL_MANAGER, e.g. "VIC"
+  status      AccountStatus @default(ACTIVE)
+  state       String?
+  suburb      String?
+  pronouns    String?
+  createdAt   DateTime      @default(now())
+
+  // Auth (v1.2 s15)
+  passwordHash     String?
+  emailVerifiedAt  DateTime?
+  mobileVerifiedAt DateTime?
+  failedLogins     Int       @default(0)
+  lockedUntil      DateTime?
+  termsAcceptedAt  DateTime?
+
+  // Age eligibility. SELF_DECLARED_DOB is a placeholder; an ID-based method is required before launch.
+  ageVerifiedAt         DateTime?
+  ageVerificationMethod String?
+
+  // Communication preferences (v1.2 s4.3)
+  locale           String  @default("en-AU")
+  timezone         String  @default("Australia/Sydney")
+  quietStartMin    Int? // minutes from midnight, local time
+  quietEndMin      Int?
+  marketingConsent Boolean @default(false)
+
+  // SRS v1.3 s19.3: optional emergency contact, used only by the SOS feature
+  emergencyContactName   String?
+  emergencyContactMobile String?
+
+  mateProfile     MateProfile?
+  bookings        Booking[]                @relation("CustomerBookings")
+  reviews         Review[]
+  groupJoins      GroupParticipant[]
+  messages        Message[]
+  reports         Report[]                 @relation("ReportsMade")
+  tickets         SupportTicket[]          @relation("TicketRequester")
+  ticketsAssigned SupportTicket[]          @relation("TicketAssignee")
+  ticketMessages  SupportTicketMessage[]
+  sessions        Session[]
+  notifications   Notification[]
+  notifPrefs      NotificationPreference[]
+  subscriptions   UserSubscription[]
+  payments        PaymentTransaction[]
+  favourites      Favourite[]
+  introductions   Introduction[]
+  savedLocations  SavedLocation[]
+  blocksMade      Block[]                  @relation("Blocker")
+  blockedBy       Block[]                  @relation("Blocked")
+}
+
+// SRS v1.3 s11.2 / 16.2: either party can block the other. Blocks stop introductions, bookings and messages.
+model Block {
+  blockerId String
+  blockedId String
+  blocker   User     @relation("Blocker", fields: [blockerId], references: [id], onDelete: Cascade)
+  blocked   User     @relation("Blocked", fields: [blockedId], references: [id], onDelete: Cascade)
+  reason    String?
+  createdAt DateTime @default(now())
+
+  @@id([blockerId, blockedId])
+}
+
+// ---------- Auth ----------
+
+model Session {
+  id         String   @id // SHA-256 of the cookie token; the raw token is never stored
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt  DateTime
+  userAgent  String?
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+}
+
+model OtpCode {
+  id         String    @id @default(cuid())
+  target     String // email or E.164 mobile
+  purpose    String // VERIFY_EMAIL | VERIFY_MOBILE | SIGN_IN | RESET_PASSWORD
+  codeHash   String
+  expiresAt  DateTime
+  attempts   Int       @default(0)
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([target, purpose])
+}
+
+// ---------- Platform configuration (v1.2 s8) ----------
+
+model PlatformSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+}
+
+enum IntegrationKind {
+  EMAIL
+  SMS
+  PUSH
+  MAPS
+  PAYMENTS
+}
+
+// Central integration manager: which provider is active per channel. Secrets live in env vars only.
+model IntegrationSetting {
+  kind      IntegrationKind @id
+  provider  String
+  config    Json            @default("{}") // non-secret config, e.g. sender ID
+  updatedAt DateTime        @updatedAt
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String?
+  action    String
+  entity    String
+  entityId  String?
+  meta      Json?
+  createdAt DateTime @default(now())
+
+  @@index([entity, entityId])
+}
+
+// ---------- Notifications (v1.2 s2-4) ----------
+
+enum Channel {
+  IN_APP
+  EMAIL
+  SMS
+  PUSH
+}
+
+enum DeliveryStatus {
+  QUEUED
+  SENT
+  FAILED
+  SKIPPED
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  event     String
+  category  String
+  title     String
+  body      String
+  link      String?
+  readAt    DateTime?
+  archived  Boolean   @default(false)
+  createdAt DateTime  @default(now())
+
+  @@index([userId, readAt])
+}
+
+model NotificationPreference {
+  userId   String
+  user     User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category String
+  email    Boolean @default(true)
+  sms      Boolean @default(true)
+  push     Boolean @default(true)
+
+  @@id([userId, category])
+}
+
+model MessageTemplate {
+  id        String   @id @default(cuid())
+  channel   Channel
+  event     String
+  locale    String   @default("en-AU")
+  subject   String?
+  body      String // {{variable}} placeholders
+  active    Boolean  @default(true)
+  updatedAt DateTime @updatedAt
+
+  @@unique([channel, event, locale])
+}
+
+model DeliveryLog {
+  id          String         @id @default(cuid())
+  userId      String?
+  channel     Channel
+  event       String
+  provider    String
+  to          String // masked
+  subject     String?
+  body        String
+  status      DeliveryStatus @default(QUEUED)
+  error       String?
+  attempts    Int            @default(0)
+  providerRef String?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@index([status, channel])
+}
+
+// ---------- Payments ledger (v1.2 s6) ----------
+
+enum TxKind {
+  BOOKING_AUTHORISATION
+  BOOKING_CAPTURE
+  REFUND
+  SUBSCRIPTION
+  MATE_PAYOUT
+  TIP
+}
+
+enum TxStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+model PaymentTransaction {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id])
+  kind            TxKind
+  status          TxStatus @default(PENDING)
+  amountCents     Int
+  currency        String   @default("AUD")
+  provider        String
+  providerRef     String?
+  idempotencyKey  String   @unique
+  bookingId       String?
+  booking         Booking? @relation(fields: [bookingId], references: [id])
+  mateId          String? // s13.5
+  grossCents      Int? // s13.5: gross service amount before commission
+  commissionCents Int? // s13.5: platform commission
+  feeCents        Int? // customer booking fee portion
+  subscriptionId  String?
+  description     String
+  createdAt       DateTime @default(now())
+}
+
+// ---------- Membership (v1.2 s5) ----------
+
+enum BillingInterval {
+  MONTHLY
+  ANNUAL
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+  EXPIRED
+}
+
+model SubscriptionPlan {
+  id           String             @id @default(cuid())
+  slug         String             @unique
+  audience     Role
+  name         String
+  description  String
+  monthlyCents Int
+  annualCents  Int
+  features     String[]
+  limits       Json // e.g. {"favourites":10,"introductionsPerMonth":3,"galleryPhotos":9}
+  trialDays    Int                @default(0)
+  active       Boolean            @default(true)
+  sortOrder    Int                @default(0)
+  subscribers  UserSubscription[]
+}
+
+model UserSubscription {
+  id                String             @id @default(cuid())
+  userId            String
+  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planId            String
+  plan              SubscriptionPlan   @relation(fields: [planId], references: [id])
+  interval          BillingInterval
+  status            SubscriptionStatus
+  currentPeriodEnd  DateTime
+  cancelAtPeriodEnd Boolean            @default(false)
+  createdAt         DateTime           @default(now())
+}
+
+model Favourite {
+  userId    String
+  mateId    String
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mate      MateProfile @relation(fields: [mateId], references: [id], onDelete: Cascade)
+  createdAt DateTime    @default(now())
+
+  @@id([userId, mateId])
+}
+
+// ---------- Introduce Yourself (SRS 17) ----------
+
+enum IntroStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  MORE_INFO
+}
+
+model Introduction {
+  id               String      @id @default(cuid())
+  customerId       String
+  customer         User        @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  mateId           String
+  mate             MateProfile @relation(fields: [mateId], references: [id], onDelete: Cascade)
+  message          String
+  proposedActivity String
+  wantsFreeMeet    Boolean     @default(false)
+  status           IntroStatus @default(PENDING)
+  mateReply        String?
+  createdAt        DateTime    @default(now())
+  respondedAt      DateTime?
+  messages         Message[]
+}
+
+// ---------- Location (v1.2 s1) ----------
+
+// Gazetteer of suburb centroids used by the built-in maps provider and to place Mates
+// approximately (never at a residential address).
+model Suburb {
+  id       String @id @default(cuid())
+  name     String
+  state    String
+  postcode String
+  lat      Float
+  lng      Float
+
+  @@unique([name, state])
+}
+
+model SavedLocation {
+  id      String @id @default(cuid())
+  userId  String
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  label   String // Home, Work, or custom
+  address String
+  lat     Float
+  lng     Float
+}
+
+model MateProfile {
+  id                  String     @id @default(cuid())
+  userId              String     @unique
+  user                User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  displayName         String
+  intro               String
+  about               String
+  serviceSuburb       String // public service area, NOT residential address
+  state               String
+  serviceRadiusKm     Int        @default(15)
+  hourlyRateCents     Int
+  languages           String[]
+  interests           String[]
+  qualities           String[]
+  boundaries          String
+  verified            Boolean    @default(false)
+  status              MateStatus @default(PENDING_REVIEW)
+  statusReason        String? // last staff decision reason, shown to the Mate (SRS v1.3 s7.4)
+  introWeeklyLimit    Int? // Mate-set cap on new introductions per week (s11.2)
+  fixedTravelFeeCents Int        @default(0) // s9.4 fixed travel charge
+  // only APPROVED profiles appear in search
+  offersFreeFirstMeet Boolean    @default(false)
+  freeFirstMeetMins   Int?
+  groupAvailable      Boolean    @default(false)
+  accessibilityAware  Boolean    @default(false)
+  sponsored           Boolean    @default(false) // paid promotion, must be labelled
+  // Addendum 1.4 / 2.5
+  minBookingHours     Float      @default(1)
+  maxBookingHours     Float      @default(8)
+  equipmentNote       String?
+  insured             Boolean    @default(false)
+  experience          String?
+  avatarHue           Int        @default(200)
+  completedBookings   Int        @default(0)
+  createdAt           DateTime   @default(now())
+  // v1.2 s1.3 / 1.5: approximate service-area centre (suburb centroid), never a home address
+  lat                 Float?
+  lng                 Float?
+  acceptOutsideArea   Boolean    @default(false)
+  travelFeePerKmCents Int        @default(0)
+  minTravelFeeCents   Int        @default(0)
+
+  services        MateService[]
+  availability    Availability[]
+  bookingRequests BookingMate[]
+  reviews         Review[]
+  favouritedBy    Favourite[]
+  introductions   Introduction[]
+  hostedGroups    GroupActivity[]
+}
+
+// Admin-managed (addendum s4/s7): never hard-coded in the frontend
+model Category {
+  id             String          @id @default(cuid())
+  slug           String          @unique
+  name           String
+  description    String
+  emoji          String
+  kind           ServiceKind     @default(COMPANION)
+  commissionRate Float? // per-category Mate commission override (s13.4); null = platform default
+  sortOrder      Int             @default(0)
+  active         Boolean         @default(true)
+  parentId       String?
+  parent         Category?       @relation("Subcategories", fields: [parentId], references: [id])
+  children       Category[]      @relation("Subcategories")
+  services       Service[]
+  groups         GroupActivity[]
+}
+
+// Homepage "What do you need today?" choices. The customer's pick is never stored.
+model Need {
+  id            String   @id @default(cuid())
+  slug          String   @unique
+  label         String
+  categorySlugs String[]
+  sortOrder     Int      @default(0)
+  active        Boolean  @default(true)
+}
+
+// Addendum 1.6 / 6: restricted task register
+model RestrictedTask {
+  id     String @id @default(cuid())
+  name   String @unique
+  reason String
+}
+
+// A Service is both a bookable companion activity and a household task/skill.
+model Service {
+  id         String   @id @default(cuid())
+  slug       String   @unique
+  name       String
+  categoryId String
+  category   Category @relation(fields: [categoryId], references: [id])
+  inclusions String[]
+  exclusions String[]
+  minHours   Float    @default(1)
+  estMins    Int      @default(60) // estimated time per task, used for multi-task estimates
+  active     Boolean  @default(true)
+
+  mates     MateService[]
+  bookings  Booking[]
+  taskItems BookingTaskItem[]
+}
+
+model MateService {
+  mateId     String
+  serviceId  String
+  restricted Boolean     @default(false) // set by staff (s7.4); hidden from search/booking, Mate can't re-enable
+  mate       MateProfile @relation(fields: [mateId], references: [id], onDelete: Cascade)
+  service    Service     @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@id([mateId, serviceId])
+}
+
+model Availability {
+  id       String      @id @default(cuid())
+  mateId   String
+  mate     MateProfile @relation(fields: [mateId], references: [id], onDelete: Cascade)
+  weekday  Int // 0 = Sunday
+  startMin Int // minutes from midnight
+  endMin   Int
+}
+
+model Booking {
+  id                String               @id @default(cuid())
+  customerId        String
+  customer          User                 @relation("CustomerBookings", fields: [customerId], references: [id])
+  serviceId         String // primary service; extra household tasks live in taskItems
+  service           Service              @relation(fields: [serviceId], references: [id])
+  startsAt          DateTime
+  endsAt            DateTime
+  participants      Int                  @default(1)
+  meetingPoint      String
+  description       String
+  expensesNote      String?
+  accessibility     String?
+  recurrence        Recurrence           @default(ONE_TIME) // each occurrence is accepted individually
+  expenseLimitCents Int? // separately authorised customer spending (e.g. groceries)
+  policyAcceptedAt  DateTime
+  status            BookingStatus        @default(DRAFT)
+  subtotalCents     Int
+  travelFeeCents    Int                  @default(0)
+  customerFeeCents  Int
+  totalCents        Int
+  lat               Float? // meeting/service location, shared with Mates only after acceptance
+  lng               Float?
+  distanceKm        Float? // from the Mate's service-area centre
+  paidAt            DateTime?
+  isFreeMeet        Boolean              @default(false) // s11.3: $0 service time
+  introductionId    String?
+  payments          PaymentTransaction[]
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+
+  mates     BookingMate[]
+  reviews   Review[]
+  taskItems BookingTaskItem[]
+  messages  Message[]
+  reports   Report[]
+}
+
+model BookingMate {
+  id          String       @id @default(cuid())
+  bookingId   String
+  booking     Booking      @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  mateId      String
+  mate        MateProfile  @relation(fields: [mateId], references: [id])
+  response    MateResponse @default(PENDING)
+  rateCents   Int // hourly rate locked at booking time
+  amountCents Int
+  respondedAt DateTime?
+
+  @@unique([bookingId, mateId])
+}
+
+// Addendum 1.3: multiple tasks in one booking
+model BookingTaskItem {
+  id        String  @id @default(cuid())
+  bookingId String
+  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  serviceId String
+  service   Service @relation(fields: [serviceId], references: [id])
+  estMins   Int
+}
+
+// SRS 18: booking-scoped chat; permissions enforced server-side.
+model Message {
+  id             String        @id @default(cuid())
+  // Exactly one of bookingId / introductionId is set.
+  bookingId      String?
+  booking        Booking?      @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  introductionId String?
+  introduction   Introduction? @relation(fields: [introductionId], references: [id], onDelete: Cascade)
+  senderId       String
+  sender         User          @relation(fields: [senderId], references: [id])
+  body           String
+  flagged        Boolean       @default(false)
+  createdAt      DateTime      @default(now())
+}
+
+model Report {
+  id         String       @id @default(cuid())
+  reporterId String
+  reporter   User         @relation("ReportsMade", fields: [reporterId], references: [id])
+  bookingId  String?
+  booking    Booking?     @relation(fields: [bookingId], references: [id])
+  mateId     String?
+  reason     String
+  details    String
+  status     ReportStatus @default(OPEN)
+  adminNote  String?
+  createdAt  DateTime     @default(now())
+}
+
+model Review {
+  id         String      @id @default(cuid())
+  bookingId  String
+  booking    Booking     @relation(fields: [bookingId], references: [id])
+  reviewerId String
+  reviewer   User        @relation(fields: [reviewerId], references: [id])
+  mateId     String
+  mate       MateProfile @relation(fields: [mateId], references: [id])
+  rating     Int
+  comment    String
+  mateReply  String?
+  hidden     Boolean     @default(false)
+  createdAt  DateTime    @default(now())
+
+  // SRS 19: one eligible review per booking per reviewer (per Mate in group bookings)
+  @@unique([bookingId, reviewerId, mateId])
+}
+
+model GroupActivity {
+  id           String             @id @default(cuid())
+  title        String
+  description  String
+  categoryId   String
+  category     Category           @relation(fields: [categoryId], references: [id])
+  hostMateId   String
+  host         MateProfile        @relation(fields: [hostMateId], references: [id])
+  startsAt     DateTime
+  durationMins Int
+  suburb       String
+  state        String
+  places       Int
+  priceCents   Int
+  visibility   GroupVisibility    @default(PUBLIC)
+  conditions   String
+  participants GroupParticipant[]
+}
+
+model GroupParticipant {
+  groupId   String
+  userId    String
+  group     GroupActivity @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user      User          @relation(fields: [userId], references: [id])
+  consented Boolean       @default(true)
+  joinedAt  DateTime      @default(now())
+
+  @@id([groupId, userId])
+}
+
+enum MateStatus {
+  DRAFT
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
+
+// ---------- Support (v1.2 s11) ----------
+
+enum TicketStatus {
+  OPEN
+  ASSIGNED
+  IN_PROGRESS
+  WAITING_CUSTOMER
+  WAITING_MATE
+  ESCALATED
+  RESOLVED
+  CLOSED
+}
+
+enum TicketPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+model SupportTicket {
+  id              String                 @id @default(cuid())
+  number          Int                    @unique @default(autoincrement())
+  requesterId     String
+  requester       User                   @relation("TicketRequester", fields: [requesterId], references: [id])
+  assigneeId      String?
+  assignee        User?                  @relation("TicketAssignee", fields: [assigneeId], references: [id])
+  category        String
+  subject         String
+  bookingId       String?
+  status          TicketStatus           @default(OPEN)
+  priority        TicketPriority         @default(NORMAL)
+  restricted      Boolean                @default(false) // safety tickets: only staff with safety.manage (s19.2)
+  firstResponseAt DateTime?
+  resolvedAt      DateTime?
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+  messages        SupportTicketMessage[]
+}
+
+model SupportTicketMessage {
+  id        String        @id @default(cuid())
+  ticketId  String
+  ticket    SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User          @relation(fields: [authorId], references: [id])
+  body      String
+  internal  Boolean       @default(false) // staff-only note
+  createdAt DateTime      @default(now())
+}

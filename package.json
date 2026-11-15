@@ -6,22 +6,44 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "db:start": "node scripts/dev-db.mjs",
+    "db:docker": "docker compose up -d",
+    "db:push": "prisma db push",
+    "db:seed": "prisma db seed",
+    "db:reset": "prisma db push --force-reset && prisma db seed",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test scripts/unit.test.ts",
+    "test:smoke": "node scripts/smoke.mjs",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@prisma/client": "^6.16.2",
+    "leaflet": "^1.9.4",
+    "next": "15.5.4",
     "react": "19.1.0",
     "react-dom": "19.1.0",
-    "next": "15.5.4"
+    "react-leaflet": "^5.0.0",
+    "server-only": "^0.0.1",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
-    "typescript": "^5",
+    "@eslint/eslintrc": "^3",
+    "@playwright/test": "^1.55.0",
+    "@tailwindcss/postcss": "^4",
+    "@types/leaflet": "^1.9.20",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "@tailwindcss/postcss": "^4",
-    "tailwindcss": "^4",
+    "embedded-postgres": "^17.5.0-beta.15",
     "eslint": "^9",
     "eslint-config-next": "15.5.4",
-    "@eslint/eslintrc": "^3"
+    "prisma": "^6.16.2",
+    "tailwindcss": "^4",
+    "tsx": "^4.20.5",
+    "typescript": "^5"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
   }
 }

@@ -1,103 +1,114 @@
-import Image from "next/image";
+import Link from "next/link";
+import { db } from "@/lib/db";
+import { activeCategories, searchMates } from "@/lib/mates";
+import NeedPicker from "@/components/NeedPicker";
 
-export default function Home() {
+export const dynamic = "force-dynamic";
+
+export default async function Home() {
+  const [allNeeds, categories] = await Promise.all([
+    db.need.findMany({ where: { active: true }, orderBy: { sortOrder: "asc" } }),
+    activeCategories(),
+  ]);
+  // Hide choices whose categories are all switched off (e.g. Travel outside the launch scope, SRS v1.3 s31).
+  const activeSlugs = new Set(categories.map((c) => c.slug));
+  const needs = allNeeds.filter((n) => n.categorySlugs.some((s) => activeSlugs.has(s)));
+
+  // Preload top Mates per need so the customer's choice is filtered entirely in the browser:
+  // the reason they pick is never sent to the server, stored, or shown to Mates (SRS 5.3).
+  const matesByNeed: Record<string, Awaited<ReturnType<typeof searchMates>>> = {};
+  await Promise.all(
+    needs.map(async (n) => {
+      matesByNeed[n.slug] = await searchMates({ categorySlugs: n.categorySlugs }, 6);
+    }),
+  );
+
+  const catMap = Object.fromEntries(categories.map((c) => [c.slug, { name: c.name, emoji: c.emoji, kind: c.kind }]));
+  const topLevel = categories.filter((c) => !c.parentId);
+  const household = categories.filter((c) => c.kind === "HOUSEHOLD");
+
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
-
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+    <>
+      <section className="bg-ocean text-white">
+        <div className="mx-auto max-w-6xl px-4 py-14 sm:py-20">
+          <p className="text-sm font-semibold tracking-widest text-coral uppercase">Your Mate. Your Time. Your Choice.</p>
+          <h1 className="mt-3 max-w-3xl text-4xl font-extrabold tracking-tight sm:text-5xl">
+            Nobody should miss out on life because they have nobody to go with.
+          </h1>
+          <p className="mt-4 max-w-2xl text-lg text-ocean-100">
+            Book a verified Mate for coffee, dinner, an event or a weekend activity, or for practical help at home with
+            cleaning, cooking, shopping and the garden.
+          </p>
+          <div className="mt-6 flex flex-wrap gap-3">
+            <a href="#need" className="btn-primary">What do you need today?</a>
+            <Link href="/find" className="btn border border-white/30 text-white hover:bg-white/10">Browse all Mates</Link>
+          </div>
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
-    </div>
+      </section>
+
+      <section id="need" className="mx-auto max-w-6xl scroll-mt-20 px-4 py-12">
+        <h2 className="h1">What do you need today?</h2>
+        <p className="mt-2 text-muted">
+          Tell us what you feel like doing. We&apos;ll help you find the right Mate or activity.{" "}
+          <span className="text-ocean">Your choice stays private on this device.</span>
+        </p>
+        <NeedPicker
+          needs={needs.map((n) => ({ slug: n.slug, label: n.label, categorySlugs: n.categorySlugs }))}
+          categories={catMap}
+          matesByNeed={matesByNeed}
+        />
+      </section>
+
+      <section className="mx-auto max-w-6xl px-4 py-8">
+        <h2 className="h2">Explore by category</h2>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {topLevel.map((c) => (
+            <Link key={c.id} href={`/find?category=${c.slug}`} className="card p-4 transition hover:shadow-md">
+              <div className="text-2xl">{c.emoji}</div>
+              <p className="mt-2 font-semibold text-ocean">{c.name}</p>
+              <p className="text-sm text-muted">{c.description}</p>
+            </Link>
+          ))}
+        </div>
+      </section>
+
+      <section className="mx-auto max-w-6xl px-4 py-8">
+        <div className="card grid gap-6 bg-white p-6 sm:grid-cols-[1.2fr_1fr] sm:p-8">
+          <div>
+            <span className="chip-coral">New</span>
+            <h2 className="mt-2 h2 text-2xl">Practical help at home</h2>
+            <p className="mt-2 text-muted">
+              Pick several tasks in one booking, such as kitchen, bathroom, laundry and dinner prep, and see the estimated time and
+              price before you pay. One-off, weekly, fortnightly or monthly.
+            </p>
+            <Link href="/find?kind=HOUSEHOLD" className="btn-ocean mt-4">Find household help</Link>
+          </div>
+          <ul className="grid grid-cols-2 gap-2 text-sm">
+            {household.map((c) => (
+              <li key={c.id}>
+                <Link href={`/find?category=${c.slug}`} className="flex items-center gap-2 rounded-xl bg-ivory p-3 hover:bg-ocean-100">
+                  <span>{c.emoji}</span> {c.name}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </section>
+
+      <section className="mx-auto max-w-6xl px-4 py-8">
+        <div className="grid gap-4 sm:grid-cols-3">
+          {[
+            ["Verified Mates", "ID checks before Mates can take bookings. Verification is shown on every profile."],
+            ["Clear prices, clear scope", "Rates, fees, inclusions and exclusions are shown before you confirm. No hidden extras."],
+            ["Platonic, always", "Companionship and help only. No sexual or intimate services. Report anything in one tap."],
+          ].map(([t, d]) => (
+            <div key={t} className="card p-5">
+              <p className="font-semibold text-ocean">{t}</p>
+              <p className="mt-1 text-sm text-muted">{d}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+    </>
   );
 }
